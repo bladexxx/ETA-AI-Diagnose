@@ -1,0 +1,5 @@
+{
+  "name": "ETA AI Diagnose",
+  "description": "An AI-powered diagnostic tool for the ETA Management Team (EMT). It provides near real-time vendor monitoring, root cause analysis, what-if simulations, and risk predictions to proactively manage and diagnose ETA deviations in the supply chain.",
+  "requestFramePermissions": []
+}
