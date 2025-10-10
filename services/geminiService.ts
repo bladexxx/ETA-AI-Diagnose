@@ -1,4 +1,3 @@
-
 // FIX: Implemented the full Gemini service to resolve module not found errors and provide AI functionality.
 import { GoogleGenAI, Type } from "@google/genai";
 import type { Language, POLine, POLog, RiskAssessmentResult, JustificationCategory, CategorizedAnalysisResult } from '../types';
@@ -7,13 +6,32 @@ import type { Language, POLine, POLog, RiskAssessmentResult, JustificationCatego
 const AI_GATEWAY_URL = process.env.VITE_AI_GATEWAY_URL;
 const AI_GATEWAY_API_KEY = process.env.VITE_AI_GATEWAY_API_KEY;
 const AI_GATEWAY_MODEL = process.env.VITE_AI_GATEWAY_MODEL;
-
 const IS_GATEWAY_CONFIGURED = AI_GATEWAY_URL && AI_GATEWAY_API_KEY && AI_GATEWAY_MODEL;
 
 // --- Original Gemini Client (Fallback) ---
-const GEMINI_API_KEY = process.env.API_KEY!;
+const GEMINI_API_KEY = process.env.API_KEY;
+const IS_GEMINI_CONFIGURED = !!GEMINI_API_KEY;
+
+// --- Configuration Sanity Check ---
+if (!IS_GATEWAY_CONFIGURED && !IS_GEMINI_CONFIGURED) {
+  const errorMessage = "AI provider not configured. Please set either VITE_AI_GATEWAY_* variables for the AI Gateway, or the API_KEY environment variable for direct Gemini access.";
+  // Display error in the UI to make it obvious for the user
+  document.addEventListener('DOMContentLoaded', () => {
+    const root = document.getElementById('root');
+    if (root) {
+      root.innerHTML = `<div style="position: absolute; top: 1rem; left: 1rem; right: 1rem; padding: 1.5rem; color: #fecaca; background-color: #7f1d1d; border: 1px solid #dc2626; border-radius: 8px; font-family: monospace; z-index: 9999;">
+        <h2 style="font-size: 1.5rem; font-weight: bold; margin-bottom: 0.5rem;">Configuration Error</h2>
+        <p>${errorMessage}</p>
+      </div>`;
+    }
+  });
+  throw new Error(errorMessage);
+}
+
+
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+// Conditionally initialize the Gemini client to prevent errors if the key is missing (and gateway is used).
+const ai = IS_GEMINI_CONFIGURED ? new GoogleGenAI({ apiKey: GEMINI_API_KEY! }) : null;
 
 
 /**
@@ -91,6 +109,10 @@ const callGeminiDirectly = async (
     userPrompt: string,
     jsonSchema?: object 
 ): Promise<string> => {
+    if (!ai) {
+        throw new Error("Gemini AI client is not initialized. Check your API_KEY environment variable.");
+    }
+
     const config: any = {
         systemInstruction: systemInstruction,
     };
