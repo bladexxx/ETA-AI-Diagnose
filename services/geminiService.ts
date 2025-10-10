@@ -1,14 +1,119 @@
 
-
 // FIX: Implemented the full Gemini service to resolve module not found errors and provide AI functionality.
 import { GoogleGenAI, Type } from "@google/genai";
 import type { Language, POLine, POLog, RiskAssessmentResult, JustificationCategory, CategorizedAnalysisResult } from '../types';
 
-// Per instructions, API key is handled by the execution environment.
-// It's assumed that a build tool (like Vite or Webpack) will replace process.env.API_KEY.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-const model = 'gemini-2.5-flash';
+// --- AI Gateway Configuration ---
+const AI_GATEWAY_URL = process.env.VITE_AI_GATEWAY_URL;
+const AI_GATEWAY_API_KEY = process.env.VITE_AI_GATEWAY_API_KEY;
+const AI_GATEWAY_MODEL = process.env.VITE_AI_GATEWAY_MODEL;
 
+const IS_GATEWAY_CONFIGURED = AI_GATEWAY_URL && AI_GATEWAY_API_KEY && AI_GATEWAY_MODEL;
+
+// --- Original Gemini Client (Fallback) ---
+const GEMINI_API_KEY = process.env.API_KEY!;
+const GEMINI_MODEL = 'gemini-2.5-flash';
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+
+/**
+ * A generic function to call the custom AI Gateway which mimics the OpenAI API.
+ * This is used when gateway environment variables are provided.
+ */
+const callAIGateway = async (
+    systemInstruction: string,
+    userPrompt: string,
+    isJsonOutput: boolean = false
+): Promise<string> => {
+    
+    const messages = [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: userPrompt }
+    ];
+
+    const modelInBody = AI_GATEWAY_MODEL!;
+    const gatewayUrl = AI_GATEWAY_URL!;
+    // Construct the full URL as requested
+    const fullGatewayUrl = `${gatewayUrl}/${modelInBody}/v1/chat/completions`;
+
+    const body: {
+        model: string;
+        messages: { role: string; content: string }[];
+        stream: boolean;
+        response_format?: { type: string };
+    } = {
+        model: modelInBody,
+        messages: messages,
+        stream: false,
+    };
+    
+    if (isJsonOutput) {
+        body.response_format = { type: "json_object" };
+    }
+
+    try {
+        const response = await fetch(fullGatewayUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${AI_GATEWAY_API_KEY!}`
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`AI Gateway request failed with status ${response.status}: ${errorBody}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+
+        if (!content) {
+            throw new Error("Invalid response structure from AI Gateway.");
+        }
+        
+        // Sometimes the JSON response is wrapped in markdown backticks
+        return content.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+
+    } catch (error) {
+        console.error("Error calling AI Gateway:", error);
+        throw error; // Re-throw to be handled by the calling function
+    }
+};
+
+/**
+ * A generic function to call the Google Gemini API directly.
+ * This is used as a fallback when the AI Gateway is not configured.
+ */
+const callGeminiDirectly = async (
+    systemInstruction: string,
+    userPrompt: string,
+    jsonSchema?: object 
+): Promise<string> => {
+    const config: any = {
+        systemInstruction: systemInstruction,
+    };
+    if (jsonSchema) {
+        config.responseMimeType = "application/json";
+        config.responseSchema = jsonSchema;
+    }
+
+    try {
+        const response = await ai.models.generateContent({
+            model: GEMINI_MODEL,
+            contents: userPrompt,
+            config: config,
+        });
+        return response.text;
+    } catch (error) {
+        console.error("Error calling Gemini API:", error);
+        throw error; // Re-throw to be handled by the calling function
+    }
+};
+
+
+// --- Exported Service Functions ---
 
 export const getRootCauseAnalysis = async (
     query: string,
@@ -20,7 +125,7 @@ export const getRootCauseAnalysis = async (
     const systemInstruction = `You are a world-class supply chain analyst AI. Your task is to find the root cause of vendor performance issues based on Purchase Order (PO) data and change logs.
 
 **Analysis & Formatting Rules:**
-1.  **Response Format:** Your response MUST be a valid JSON object that adheres to the provided schema. Do not include any text outside of the JSON object.
+1.  **Response Format:** Your response MUST be a valid JSON object. Do not include any text outside of the JSON object. The JSON should conform to the following structure: { "summary": "string", "analysis": [{ "category": "'Vendor Issues' | 'Internal (EMT) Issues'", "points": ["string", ...] }] }.
 2.  **Categorization:** Analyze the data and categorize each finding into one of two groups:
     *   'Vendor Issues': Problems originating from the supplier (e.g., shipping delays, production issues, repeated ETA push-outs).
     *   'Internal (EMT) Issues': Problems originating from our own systems or processes (e.g., data entry errors, frequent changes to PO quantities, unrealistic initial ETAs).
@@ -30,53 +135,43 @@ export const getRootCauseAnalysis = async (
 5.  **Context:** Today's date is ${new Date().toISOString().split('T')[0]}.
 6.  **Language:** Generate the analysis in English. Translation will be handled by a separate process.`;
 
-
-    const prompt = `
+    const userPrompt = `
 User Query: "${query}"
-
 Vendor in Focus: ${vendor}
-
 **Data:**
-
 Open PO Lines:
 ${JSON.stringify(poLines, null, 2)}
-
 PO Change Logs:
 ${JSON.stringify(poLogs, null, 2)}
-
 Please provide your categorized root cause analysis in the specified JSON format.`;
 
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: {
+    const geminiSchema = {
+        type: Type.OBJECT,
+        properties: {
+            summary: { type: Type.STRING, description: "A high-level summary of the findings." },
+            analysis: {
+                type: Type.ARRAY,
+                items: {
                     type: Type.OBJECT,
                     properties: {
-                        summary: { type: Type.STRING, description: "A high-level summary of the findings." },
-                        analysis: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    category: { type: Type.STRING, enum: ['Vendor Issues', 'Internal (EMT) Issues'] },
-                                    points: { type: Type.ARRAY, items: { type: Type.STRING } }
-                                },
-                                required: ["category", "points"]
-                            }
-                        }
+                        category: { type: Type.STRING, enum: ['Vendor Issues', 'Internal (EMT) Issues'] },
+                        points: { type: Type.ARRAY, items: { type: Type.STRING } }
                     },
-                    required: ["summary", "analysis"]
+                    required: ["category", "points"]
                 }
-            },
-        });
-        const jsonString = response.text;
+            }
+        },
+        required: ["summary", "analysis"]
+    };
+
+    try {
+        const jsonString = IS_GATEWAY_CONFIGURED
+            ? await callAIGateway(systemInstruction, userPrompt, true)
+            : await callGeminiDirectly(systemInstruction, userPrompt, geminiSchema);
+        
         return JSON.parse(jsonString) as CategorizedAnalysisResult;
     } catch (error) {
-        console.error("Error calling Gemini API or parsing response:", error);
+        console.error("Error generating or parsing root cause analysis:", error);
         return null;
     }
 };
@@ -86,41 +181,37 @@ export const translateText = async (
     targetLanguage: Language
 ): Promise<CategorizedAnalysisResult | null> => {
     const languageName = targetLanguage === 'zh' ? 'Chinese' : 'English';
-    const systemInstruction = `You are an expert translator. The user will provide a JSON object. Translate all user-facing string values ('summary' and all strings within the 'points' arrays) to ${languageName}. Maintain the original markdown formatting and the exact JSON structure. Only provide the translated JSON object as a response.`;
+    const systemInstruction = `You are an expert translator. The user will provide a JSON object. Translate all user-facing string values ('summary' and all strings within the 'points' arrays) to ${languageName}. Maintain the original markdown formatting and the exact JSON structure. Only provide the translated JSON object as a response. The JSON structure is: { "summary": "string", "analysis": [{ "category": "string", "points": ["string", ...] }] }`;
     
-    const prompt = JSON.stringify(analysis, null, 2);
+    const userPrompt = JSON.stringify(analysis, null, 2);
     
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                 responseSchema: { // Ensure the translated output also adheres to the schema
+    const geminiSchema = {
+        type: Type.OBJECT,
+        properties: {
+            summary: { type: Type.STRING },
+            analysis: {
+                type: Type.ARRAY,
+                items: {
                     type: Type.OBJECT,
                     properties: {
-                        summary: { type: Type.STRING },
-                        analysis: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    category: { type: Type.STRING, enum: ['Vendor Issues', 'Internal (EMT) Issues'] },
-                                    points: { type: Type.ARRAY, items: { type: Type.STRING } }
-                                },
-                                required: ["category", "points"]
-                            }
-                        }
+                        category: { type: Type.STRING, enum: ['Vendor Issues', 'Internal (EMT) Issues'] },
+                        points: { type: Type.ARRAY, items: { type: Type.STRING } }
                     },
-                    required: ["summary", "analysis"]
+                    required: ["category", "points"]
                 }
             }
-        });
-        const jsonString = response.text;
+        },
+        required: ["summary", "analysis"]
+    };
+
+    try {
+        const jsonString = IS_GATEWAY_CONFIGURED
+            ? await callAIGateway(systemInstruction, userPrompt, true)
+            : await callGeminiDirectly(systemInstruction, userPrompt, geminiSchema);
+
         return JSON.parse(jsonString) as CategorizedAnalysisResult;
     } catch (error) {
-        console.error("Error calling Gemini API for translation:", error);
+        console.error("Error calling AI for translation:", error);
         return null;
     }
 };
@@ -149,16 +240,10 @@ ${JSON.stringify(poLines, null, 2)}
 Please run the simulation and report the results.`;
 
      try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                systemInstruction: systemInstruction,
-            },
-        });
-        return response.text;
+        return IS_GATEWAY_CONFIGURED
+            ? await callAIGateway(systemInstruction, prompt, false)
+            : await callGeminiDirectly(systemInstruction, prompt);
     } catch (error) {
-        console.error("Error calling Gemini API:", error);
         return "An error occurred while communicating with the AI service. Please check the console for details and try again later.";
     }
 };
@@ -167,39 +252,35 @@ export const getRiskPrediction = async (
     poLines: POLine[],
     language: Language
 ): Promise<RiskAssessmentResult[]> => {
-    const prompt = `Analyze the following open PO lines and identify those with a high or medium risk of future delays. Consider factors like existing past due status, high open quantities, and patterns across vendors. Return a JSON array of objects.
+    const systemInstruction = `You are an expert supply chain risk assessment AI. Your task is to analyze the provided open purchase order (PO) data to predict which PO lines are at risk of future delays. Today's date is ${new Date().toISOString().split('T')[0]}. Respond ONLY with a JSON array that matches this structure: [{ "po_line_id": "string", "risk_level": "'High' | 'Medium' | 'Low'", "justification": "string" }]. Provide justification in ${language === 'zh' ? 'Chinese' : 'English'}.`;
+
+    const userPrompt = `Analyze the following open PO lines and identify those with a high or medium risk of future delays. Consider factors like existing past due status, high open quantities, and patterns across vendors. Return a JSON array of objects.
 
 **Data:**
 Open PO Lines:
 ${JSON.stringify(poLines, null, 2)}`;
 
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: prompt,
-            config: {
-                systemInstruction: `You are an expert supply chain risk assessment AI. Your task is to analyze the provided open purchase order (PO) data to predict which PO lines are at risk of future delays. Today's date is ${new Date().toISOString().split('T')[0]}. Respond ONLY with a JSON array that matches the provided schema. Provide justification in ${language === 'zh' ? 'Chinese' : 'English'}.`,
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            po_line_id: { type: Type.STRING },
-                            risk_level: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
-                            justification: { type: Type.STRING }
-                        },
-                        required: ["po_line_id", "risk_level", "justification"]
-                    }
-                }
+    const geminiSchema = {
+        type: Type.ARRAY,
+        items: {
+            type: Type.OBJECT,
+            properties: {
+                po_line_id: { type: Type.STRING },
+                risk_level: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                justification: { type: Type.STRING }
             },
-        });
+            required: ["po_line_id", "risk_level", "justification"]
+        }
+    };
+
+    try {
+        const jsonString = IS_GATEWAY_CONFIGURED
+            ? await callAIGateway(systemInstruction, userPrompt, true)
+            : await callGeminiDirectly(systemInstruction, userPrompt, geminiSchema);
         
-        const jsonString = response.text;
         return JSON.parse(jsonString) as RiskAssessmentResult[];
     } catch (error) {
-        console.error("Error parsing JSON from Gemini API for risk prediction:", error);
-        // On error, return an empty array so the UI can handle it gracefully.
+        console.error("Error parsing JSON from AI for risk prediction:", error);
         return [];
     }
 };
@@ -209,34 +290,31 @@ export const categorizeJustifications = async (
   justifications: string[],
   language: Language
 ): Promise<JustificationCategory[]> => {
-  const prompt = `Analyze this list of risk justifications. Group them into 3-5 high-level categories (e.g., "Severe Past Due", "Logistics Delays", "High Open Quantity"). For each category, provide a count of how many justifications fall into it.
+  const systemInstruction = `You are a text analysis AI. Your task is to categorize risk reasons. Respond ONLY with a JSON array that matches this structure: [{ "category": "string", "count": number }]. Provide category names in ${language === 'zh' ? 'Chinese' : 'English'}.`;
+
+  const userPrompt = `Analyze this list of risk justifications. Group them into 3-5 high-level categories (e.g., "Severe Past Due", "Logistics Delays", "High Open Quantity"). For each category, provide a count of how many justifications fall into it.
 
 **Justifications:**
 ${JSON.stringify(justifications)}
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: prompt,
-      config: {
-        systemInstruction: `You are a text analysis AI. Your task is to categorize risk reasons. Respond ONLY with a JSON array that matches the provided schema. Provide category names in ${language === 'zh' ? 'Chinese' : 'English'}.`,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              category: { type: Type.STRING },
-              count: { type: Type.INTEGER },
-            },
-            required: ['category', 'count'],
-          },
+    const geminiSchema = {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          category: { type: Type.STRING },
+          count: { type: Type.INTEGER },
         },
+        required: ['category', 'count'],
       },
-    });
+    };
 
-    const jsonString = response.text;
+  try {
+    const jsonString = IS_GATEWAY_CONFIGURED
+        ? await callAIGateway(systemInstruction, userPrompt, true)
+        : await callGeminiDirectly(systemInstruction, userPrompt, geminiSchema);
+
     return JSON.parse(jsonString) as JustificationCategory[];
   } catch (error) {
     console.error('Error categorizing justifications:', error);
