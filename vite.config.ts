@@ -9,6 +9,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), basicSsl()],
+    server: {
+      port: 3000,
+    },
     define: {
       // Expose VITE_ variables to the client. We use JSON.stringify to ensure
       // the values are correctly quoted as strings in the client-side code.
