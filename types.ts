@@ -2,6 +2,7 @@
 
 export interface POLine {
   po_line_id: string;
+  po_number: string;
   vendor: string;
   vendor_number: number;
   esd: string; // Early Ship Date
@@ -16,6 +17,7 @@ export interface POLine {
 
 export interface POLog {
   log_id: string;
+  po_number: string;
   po_line_id: string;
   change_date: string;
   changed_field: string;

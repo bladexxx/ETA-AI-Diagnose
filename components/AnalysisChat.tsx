@@ -1,9 +1,9 @@
-
-
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { getRootCauseAnalysis, translateText } from '../services/geminiService';
+import * as knowledgeService from '../services/knowledgeService';
 import type { POLine, POLog, Language, CategorizedAnalysisResult } from '../types';
 import Spinner from './common/Spinner';
+import KnowledgeBaseManager from './KnowledgeBaseManager';
 
 declare const marked: any;
 declare const html2canvas: any;
@@ -70,12 +70,23 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
   const [selectedVendor, setSelectedVendor] = useState<string>('All Vendors');
   const [language, setLanguage] = useState<Language>('en');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [knowledgeFiles, setKnowledgeFiles] = useState<{name: string, uploadedAt: string}[]>([]);
   const analysisEndRef = useRef<HTMLDivElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
   const isInitialMount = useRef(true);
 
   const vendors = useMemo(() => ['All Vendors', ...Array.from(new Set(poLines.map(line => line.vendor)))], [poLines]);
   const currentAnalysis = language === 'zh' && analysisContent.zh ? analysisContent.zh : analysisContent.en;
+
+  // Refresh file list from service
+  const refreshKnowledgeFiles = useCallback(() => {
+    setKnowledgeFiles(knowledgeService.listFiles());
+  }, []);
+
+  useEffect(() => {
+    refreshKnowledgeFiles();
+  }, [refreshKnowledgeFiles]);
+
 
   const PRESET_QUERIES = useMemo(() => [
     `Who are the top 5 past due vendors by absolute number of past due lines?`,
@@ -106,7 +117,8 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
       : poLogs.filter(log => poLineIdsForVendor.has(log.po_line_id));
       
     try {
-      const result = await getRootCauseAnalysis(currentQuery, filteredLines, filteredLogs, vendor, 'en');
+      const knowledgeBaseContent = knowledgeService.getKnowledgeBaseContent();
+      const result = await getRootCauseAnalysis(currentQuery, filteredLines, filteredLogs, vendor, 'en', knowledgeBaseContent);
       setAnalysisContent({ en: result, zh: null });
     } catch (error) {
        setAnalysisContent({ en: { summary: 'An error occurred while generating the analysis. Please check the console and try again.', analysis: [] }, zh: null });
@@ -219,22 +231,28 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
 
 
   return (
-    <div className={`flex flex-col transition-all duration-300 ${isFullscreen ? 'fixed inset-0 bg-slate-900 z-50 h-screen p-4' : 'h-[70vh]'}`}>
+    <div className={`flex flex-col transition-all duration-300 ${isFullscreen ? 'fixed inset-0 bg-slate-900 z-50 h-screen p-4' : 'h-full'}`}>
         {!isFullscreen && (
-          <div className="mb-4">
-              <label htmlFor="vendor-select" className="block text-sm font-medium text-slate-300 mb-1">Select a Vendor to Diagnose</label>
-              <select 
-                  id="vendor-select"
-                  value={selectedVendor}
-                  onChange={(e) => setSelectedVendor(e.target.value)}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                  {vendors.map(v => <option key={v} value={v}>{v}</option>)}
-              </select>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label htmlFor="vendor-select" className="block text-sm font-medium text-slate-300 mb-1">Select a Vendor to Diagnose</label>
+                <select 
+                    id="vendor-select"
+                    value={selectedVendor}
+                    onChange={(e) => setSelectedVendor(e.target.value)}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                    {vendors.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <KnowledgeBaseManager 
+                files={knowledgeFiles}
+                onFilesUpdate={refreshKnowledgeFiles}
+              />
           </div>
         )}
 
-        <div className="flex-grow bg-slate-800 rounded-lg border border-slate-700 mb-4 flex flex-col overflow-hidden">
+        <div className="flex-grow bg-slate-800 rounded-lg border border-slate-700 mb-4 flex flex-col overflow-hidden min-h-[50vh]">
              <div className="p-2 border-b border-slate-700 flex justify-between items-center flex-shrink-0">
                 <div className="flex items-center gap-2">
                     <label className="text-sm font-medium text-slate-300">Report Language</label>

@@ -1,3 +1,6 @@
+// FIX: Added a triple-slash directive to provide Node.js types for the `process` global, which resolves the error on `process.cwd()`.
+/// <reference types="node" />
+
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';

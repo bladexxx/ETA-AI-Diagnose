@@ -142,22 +142,25 @@ export const getRootCauseAnalysis = async (
     poLines: POLine[],
     poLogs: POLog[],
     vendor: string,
-    language: Language
+    language: Language,
+    knowledgeBase?: string,
 ): Promise<CategorizedAnalysisResult | null> => {
-    const systemInstruction = `You are a world-class supply chain analyst AI. Your task is to find the root cause of vendor performance issues based on Purchase Order (PO) data and change logs.
+    const systemInstruction = `You are a world-class supply chain analyst AI. Your task is to find the root cause of vendor performance issues based on Purchase Order (PO) data, change logs, and a provided knowledge base.
 
 **Analysis & Formatting Rules:**
 1.  **Response Format:** Your response MUST be a valid JSON object. Do not include any text outside of the JSON object. The JSON should conform to the following structure: { "summary": "string", "analysis": [{ "category": "'Vendor Issues' | 'Internal (EMT) Issues'", "points": ["string", ...] }] }.
-2.  **Categorization:** Analyze the data and categorize each finding into one of two groups:
+2.  **Knowledge Base Priority:** If a knowledge base is provided, you MUST use it as the primary source of context for your analysis. Relate the PO data to the information in the knowledge base.
+3.  **Categorization:** Analyze the data and categorize each finding into one of two groups:
     *   'Vendor Issues': Problems originating from the supplier (e.g., shipping delays, production issues, repeated ETA push-outs).
     *   'Internal (EMT) Issues': Problems originating from our own systems or processes (e.g., data entry errors, frequent changes to PO quantities, unrealistic initial ETAs).
-3.  **Summary:** Provide a concise, high-level summary of the overall situation in the 'summary' field.
-4.  **Detailed Points:** For each category, provide specific, actionable findings as an array of markdown-formatted strings in the 'points' field.
+4.  **Summary:** Provide a concise, high-level summary of the overall situation in the 'summary' field.
+5.  **Detailed Points:** For each category, provide specific, actionable findings as an array of markdown-formatted strings in the 'points' field.
     *   Start by stating the core issue, then provide one or two specific PO line examples that best illustrate that problem. Do NOT list all affected PO lines.
-5.  **Context:** Today's date is ${new Date().toISOString().split('T')[0]}.
-6.  **Language:** Generate the analysis in English. Translation will be handled by a separate process.`;
+6.  **Context:** Today's date is ${new Date().toISOString().split('T')[0]}.
+7.  **Language:** Generate the analysis in English. Translation will be handled by a separate process.`;
 
     const userPrompt = `
+${knowledgeBase ? `**Knowledge Base:**\n---\n${knowledgeBase}\n---\n\n` : ''}
 User Query: "${query}"
 Vendor in Focus: ${vendor}
 **Data:**
