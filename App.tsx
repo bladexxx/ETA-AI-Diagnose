@@ -4,7 +4,7 @@ import VendorMonitoring from './components/VendorMonitoring';
 import AnalysisChat from './components/AnalysisChat';
 import RiskAssessment from './components/RiskAssessment';
 import { openPoStatusLatest, openPoStatusLog } from './data/mockData';
-import type { POLine, POLog } from './types';
+import type { POLine, POLog, CategorizedAnalysisResult } from './types';
 import { Tab } from './types';
 
 const App: React.FC = () => {
@@ -16,12 +16,17 @@ const App: React.FC = () => {
   const [analysisVendor, setAnalysisVendor] = useState<string | null>(null);
   const [analysisQuery, setAnalysisQuery] = useState<string | null>(null);
 
+  // State for persisting analysis content
+  const [analysisContent, setAnalysisContent] = useState<{ en: CategorizedAnalysisResult | null, zh: CategorizedAnalysisResult | null }>({ en: null, zh: null });
+
   const handleAnalyzeWorseningVendor = (vendorName: string) => {
     setActiveTab(Tab.Analysis);
     setAnalysisVendor(vendorName);
     // Pre-define a specific query for the analysis component
     const query = `Analyze the root cause for the recent worsening performance trend for ${vendorName}. What specific POs or ETA changes in the last 7-14 days contributed to this?`;
     setAnalysisQuery(query);
+    // Clear previous analysis when starting a new one from monitoring
+    setAnalysisContent({ en: null, zh: null });
   };
 
   const renderContent = () => {
@@ -35,6 +40,8 @@ const App: React.FC = () => {
             poLogs={poLogs} 
             initialVendor={analysisVendor}
             initialQuery={analysisQuery}
+            analysisContent={analysisContent}
+            setAnalysisContent={setAnalysisContent}
             onAnalysisStart={() => {
               setAnalysisVendor(null);
               setAnalysisQuery(null);

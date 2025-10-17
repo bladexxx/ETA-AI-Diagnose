@@ -9,6 +9,15 @@ declare const marked: any;
 declare const html2canvas: any;
 declare const jspdf: any;
 
+const LOADING_MESSAGES = [
+  'Analyzing PO lines for patterns...',
+  'Correlating data with change logs...',
+  'Consulting the knowledge base for context...',
+  'Identifying root causes and contributing factors...',
+  'Synthesizing findings into a report...',
+  'Almost there, just finalizing the details...'
+];
+
 const LanguageSelector: React.FC<{
     language: Language;
     onLanguageChange: (lang: Language) => void;
@@ -30,6 +39,8 @@ interface AnalysisChatProps {
   initialVendor: string | null;
   initialQuery: string | null;
   onAnalysisStart: () => void;
+  analysisContent: { en: CategorizedAnalysisResult | null, zh: CategorizedAnalysisResult | null };
+  setAnalysisContent: React.Dispatch<React.SetStateAction<{ en: CategorizedAnalysisResult | null, zh: CategorizedAnalysisResult | null }>>;
 }
 
 const ReportControls: React.FC<{
@@ -61,10 +72,10 @@ const CategoryIcon: React.FC<{ category: 'Vendor Issues' | 'Internal (EMT) Issue
     return <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-3 text-cyan-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>;
 };
 
-const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVendor, initialQuery, onAnalysisStart }) => {
+const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVendor, initialQuery, onAnalysisStart, analysisContent, setAnalysisContent }) => {
   const [query, setQuery] = useState('');
-  const [analysisContent, setAnalysisContent] = useState<{ en: CategorizedAnalysisResult | null, zh: CategorizedAnalysisResult | null }>({ en: null, zh: null });
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('AI is analyzing...');
   const [isTranslating, setIsTranslating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<string>('All Vendors');
@@ -74,9 +85,30 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
   const analysisEndRef = useRef<HTMLDivElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
   const isInitialMount = useRef(true);
+  const loadingIntervalRef = useRef<number | null>(null);
 
   const vendors = useMemo(() => ['All Vendors', ...Array.from(new Set(poLines.map(line => line.vendor)))], [poLines]);
-  const currentAnalysis = language === 'zh' && analysisContent.zh ? analysisContent.zh : analysisContent.en;
+  
+  // Create a processed version of the analysis for rendering with clickable links
+  const processedAnalysis = useMemo(() => {
+    const currentAnalysis = language === 'zh' && analysisContent.zh ? analysisContent.zh : analysisContent.en;
+    if (!currentAnalysis) return null;
+
+    const linkify = (text: string): string => {
+        const poRegex = /(PO\d{4,}(?:-\d+)?)/g;
+        const metabaseBaseUrl = 'https://www.metabase.com/docs/latest/users-guide/start';
+        return text.replace(poRegex, (match) => `[${match}](${metabaseBaseUrl}?po_number=${match})`);
+    };
+
+    return {
+        summary: linkify(currentAnalysis.summary),
+        analysis: currentAnalysis.analysis.map(category => ({
+            ...category,
+            points: category.points.map(point => linkify(point))
+        }))
+    };
+  }, [analysisContent, language]);
+
 
   // Refresh file list from service
   const refreshKnowledgeFiles = useCallback(() => {
@@ -125,7 +157,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, poLines, poLogs, selectedVendor]);
+  }, [isLoading, poLines, poLogs, selectedVendor, setAnalysisContent]);
   
   const handleExportToPdf = async () => {
     if (!resultsContainerRef.current || isExporting) return;
@@ -189,7 +221,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
 
   useEffect(() => {
     analysisEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentAnalysis]);
+  }, [processedAnalysis]);
   
   useEffect(() => {
     if (isInitialMount.current) {
@@ -214,8 +246,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
     };
 
     handleTranslate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [language, analysisContent.en]);
+  }, [language, analysisContent.en, analysisContent.zh, setAnalysisContent]);
   
   useEffect(() => {
     const handleEscKey = (event: KeyboardEvent) => {
@@ -228,6 +259,31 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
       window.removeEventListener('keydown', handleEscKey);
     };
   }, [isFullscreen]);
+  
+  useEffect(() => {
+    if (isLoading) {
+      let messageIndex = 0;
+      setLoadingMessage(LOADING_MESSAGES[messageIndex]); // Set initial message
+
+      loadingIntervalRef.current = window.setInterval(() => {
+        messageIndex = (messageIndex + 1) % LOADING_MESSAGES.length;
+        setLoadingMessage(LOADING_MESSAGES[messageIndex]);
+      }, 2500);
+    } else {
+      if (loadingIntervalRef.current) {
+        clearInterval(loadingIntervalRef.current);
+        loadingIntervalRef.current = null;
+      }
+      setLoadingMessage('AI is analyzing...'); // Reset for next time
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (loadingIntervalRef.current) {
+        clearInterval(loadingIntervalRef.current);
+      }
+    };
+  }, [isLoading]);
 
 
   return (
@@ -252,7 +308,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
           </div>
         )}
 
-        <div className="flex-grow bg-slate-800 rounded-lg border border-slate-700 mb-4 flex flex-col overflow-hidden min-h-[50vh]">
+        <div className="flex-grow bg-slate-800 rounded-lg border border-slate-700 mb-4 flex flex-col overflow-hidden min-h-[55vh]">
              <div className="p-2 border-b border-slate-700 flex justify-between items-center flex-shrink-0">
                 <div className="flex items-center gap-2">
                     <label className="text-sm font-medium text-slate-300">Report Language</label>
@@ -263,7 +319,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
                     isFullscreen={isFullscreen}
                     onExport={handleExportToPdf}
                     isExporting={isExporting}
-                    hasContent={!!analysisContent.en}
+                    hasContent={!!processedAnalysis}
                  />
             </div>
             <div className="overflow-y-auto p-4 flex-grow relative">
@@ -272,13 +328,13 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
                        <Spinner /> <span className="ml-2">Translating...</span>
                     </div>
                 )}
-                {currentAnalysis ? (
+                {processedAnalysis ? (
                     <div ref={resultsContainerRef} className="space-y-6">
                         <div className="prose prose-invert max-w-none prose-p:text-slate-300">
-                             <div dangerouslySetInnerHTML={{ __html: marked.parse(currentAnalysis.summary) }}></div>
+                             <div dangerouslySetInnerHTML={{ __html: marked.parse(processedAnalysis.summary) }}></div>
                         </div>
 
-                        {currentAnalysis.analysis.map((categoryItem, index) => (
+                        {processedAnalysis.analysis.map((categoryItem, index) => (
                             <div key={index} className="p-4 bg-slate-900/40 border border-slate-700 rounded-lg">
                                 <h3 className="font-semibold text-lg text-slate-100 mb-3 flex items-center">
                                     <CategoryIcon category={categoryItem.category} />
@@ -299,7 +355,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
                      </div>
                    )
                 )}
-                 {isLoading && <div className="flex justify-center items-center my-4"><Spinner /> <span className="ml-2">AI is analyzing...</span></div>}
+                 {isLoading && <div className="flex justify-center items-center my-4"><Spinner /> <span className="ml-2">{loadingMessage}</span></div>}
                 <div ref={analysisEndRef} />
             </div>
         </div>
