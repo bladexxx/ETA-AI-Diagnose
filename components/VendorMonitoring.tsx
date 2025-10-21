@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import type { POLine, POLog, VendorStats, Alert } from '../types';
+import type { POLine, POLog, VendorStats, Alert, VendorRule } from '../types';
 import VendorTrendChart from './VendorTrendChart';
 
 interface VendorMonitoringProps {
@@ -13,6 +13,15 @@ const isPastDue = (eta: string): boolean => {
     today.setHours(0, 0, 0, 0);
     return new Date(eta) < today;
 };
+
+// Defines the properties of different rule types to drive the UI dynamically.
+const RULE_DEFINITIONS: { [key: string]: { label: string; unitLabel: string; unitName: string } } = {
+    'po_ack': { label: 'PO ACK Timeliness', unitLabel: 'Hours >', unitName: 'hrs' },
+    'performance_score': { label: 'Performance Score', unitLabel: 'Score <', unitName: 'points' },
+    // Future rules like 'past_due_count' or 'past_due_percent' can be added here.
+};
+const defaultRuleType = Object.keys(RULE_DEFINITIONS)[0];
+
 
 const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, onAnalyzeVendor }) => {
     // State for thresholds actively used in calculations
@@ -36,10 +45,33 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
     });
     const [worseningMenuOpenFor, setWorseningMenuOpenFor] = useState<string | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+    
+    // Vendor-specific rules state
+    const allVendors = useMemo(() => [...new Set(poLines.map(line => line.vendor))].sort(), [poLines]);
+    const [vendorRules, setVendorRules] = useState<VendorRule[]>([]);
+    const [newRule, setNewRule] = useState({
+        vendorName: allVendors[0] || '',
+        ruleType: defaultRuleType,
+        threshold: 24
+    });
 
     const handleApplyRules = () => {
         setAppliedThresholds(uiThresholds);
     };
+
+    const handleAddVendorRule = () => {
+        if (!newRule.vendorName || newRule.threshold <= 0) return;
+        const rule: VendorRule = {
+            id: `${newRule.vendorName}-${newRule.ruleType}-${Date.now()}`,
+            ...newRule,
+        };
+        setVendorRules(prev => [...prev, rule]);
+    };
+    
+    const handleDeleteVendorRule = (ruleId: string) => {
+        setVendorRules(prev => prev.filter(r => r.id !== ruleId));
+    };
+
 
     // Pre-calculate a map of PO lines per vendor for performance
     const vendorPoLinesMap = useMemo(() => {
@@ -54,16 +86,17 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
     }, [poLines]);
 
     const vendorStats = useMemo<VendorStats[]>(() => {
-        const vendorMap = new Map<string, { totalLines: number; pastDueLines: POLine[]; poLineIds: Set<string>; vendorNumber: number }>();
+        const vendorMap = new Map<string, { totalLines: number; pastDueLines: POLine[]; poLineIds: Set<string>; vendorNumber: number, lines: POLine[] }>();
 
         // 1. Group PO lines by vendor
         poLines.forEach(line => {
             if (!vendorMap.has(line.vendor)) {
-                vendorMap.set(line.vendor, { totalLines: 0, pastDueLines: [], poLineIds: new Set(), vendorNumber: line.vendor_number });
+                vendorMap.set(line.vendor, { totalLines: 0, pastDueLines: [], poLineIds: new Set(), vendorNumber: line.vendor_number, lines: [] });
             }
             const vendorData = vendorMap.get(line.vendor)!;
             vendorData.totalLines++;
             vendorData.poLineIds.add(line.po_line_id);
+            vendorData.lines.push(line);
             if (isPastDue(line.eta)) {
                 vendorData.pastDueLines.push(line);
             }
@@ -104,6 +137,23 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                 trend = 'worsening';
             }
 
+            // Calculate Performance Score (out of 100)
+            // Weighting: 50% Past Due, 30% Trend Stability, 20% ACK Timeliness
+            const pastDueScore = 50 * (1 - pastDuePercentage / 100);
+            const trendScore = 30 * (1 - calculatedWorseningPercentage / 100);
+            
+            const ackedLines = data.lines.filter(l => l.ack_status === 'Acknowledged' && l.ack_date);
+            const timelyAckedLines = ackedLines.filter(l => {
+                const creation = new Date(l.creation_date);
+                const ack = new Date(l.ack_date!);
+                const diffHours = (ack.getTime() - creation.getTime()) / (1000 * 60 * 60);
+                return diffHours <= 24;
+            });
+            const onTimeAckPercentage = ackedLines.length > 0 ? timelyAckedLines.length / ackedLines.length : 1; // Assume 100% if no acked lines to avoid penalizing
+            const ackScore = 20 * onTimeAckPercentage;
+            
+            const performanceScore = Math.max(0, pastDueScore + trendScore + ackScore);
+
             return {
                 name,
                 vendorNumber: data.vendorNumber,
@@ -112,6 +162,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                 pastDuePercentage,
                 trend,
                 recentNegativeChanges: negativeChangePoLinesCount,
+                performanceScore
             };
         });
         
@@ -125,6 +176,8 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
     // Effect to generate alerts when stats or thresholds change
     useEffect(() => {
         const newAlerts: Alert[] = [];
+        
+        // --- Process Global Rules ---
         vendorStats.forEach(vendor => {
             const { name, pastDueLinesCount, pastDuePercentage, trend } = vendor;
 
@@ -157,7 +210,41 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                 });
             }
         });
-        setAlerts(newAlerts);
+        
+        // --- Process Vendor-Specific Rules ---
+        vendorRules.forEach(rule => {
+            if (rule.ruleType === 'po_ack') {
+                const vendorLines = vendorPoLinesMap.get(rule.vendorName) || [];
+                vendorLines.forEach(line => {
+                    if (line.ack_status === 'Pending') {
+                        const hoursSinceCreation = (new Date().getTime() - new Date(line.creation_date).getTime()) / (1000 * 60 * 60);
+                        if (hoursSinceCreation > rule.threshold) {
+                            newAlerts.push({
+                                id: `${line.po_line_id}-ack-breach`,
+                                vendor: rule.vendorName,
+                                message: `PO line **${line.po_line_id}** is unacknowledged for over **${rule.threshold}** hours.`,
+                                timestamp: new Date().toISOString(),
+                                severity: 'Warning',
+                            });
+                        }
+                    }
+                });
+            } else if (rule.ruleType === 'performance_score') {
+                 const vendor = vendorStats.find(v => v.name === rule.vendorName);
+                 if (vendor && vendor.performanceScore < rule.threshold) {
+                      newAlerts.push({
+                         id: `${vendor.name}-perf-score-breach`,
+                         vendor: vendor.name,
+                         message: `Performance score of **${vendor.performanceScore.toFixed(0)}** is below the threshold of **${rule.threshold}**.`,
+                         timestamp: new Date().toISOString(),
+                         severity: 'Warning',
+                      });
+                 }
+            }
+        });
+
+
+        setAlerts(newAlerts.sort((a, b) => (b.severity === 'Critical' ? 1 : -1) - (a.severity === 'Critical' ? -1 : 1)));
 
         if (notificationSettings.enabled && notificationSettings.recipients) {
             const criticalAlerts = newAlerts.filter(a => a.severity === 'Critical');
@@ -170,7 +257,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
             }
         }
 
-    }, [vendorStats, appliedThresholds, notificationSettings]);
+    }, [vendorStats, appliedThresholds, notificationSettings, vendorRules, vendorPoLinesMap]);
     
     const highestAlertSeverity = useMemo(() => {
         if (alerts.some(a => a.severity === 'Critical')) {
@@ -207,12 +294,18 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
         }
         return <span className="text-slate-400 flex items-center"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" /></svg> Stable</span>;
     };
+    
+    const getScoreColor = (score: number) => {
+        if (score < 50) return 'text-red-400';
+        if (score < 75) return 'text-yellow-400';
+        return 'text-green-400';
+    };
 
     return (
         <div className="space-y-6">
             {/* Alert Configuration */}
             <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                <h3 className="font-semibold text-lg mb-3">Monitoring & Alerting Rules</h3>
+                <h3 className="font-semibold text-lg mb-3">Global Monitoring Rules</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-x-6 gap-y-4 items-end">
                     <div className="lg:col-span-2">
                         <label className="block text-sm text-slate-400 mb-1">Min. PO Lines</label>
@@ -249,32 +342,59 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                     </div>
                 </div>
 
-                <div className="mt-4 pt-4 border-t border-slate-700 space-y-4">
-                    <h4 className="text-sm font-semibold text-slate-300">How Rules Are Triggered:</h4>
-                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                        <div className="p-3 rounded-lg border border-slate-600 bg-slate-900/20">
-                            <h5 className="font-bold text-slate-300">Filtering</h5>
-                            <p className="text-slate-400 mt-1">Vendors with fewer than <strong className="text-white">{appliedThresholds.minPoLines}</strong> total PO lines are excluded from monitoring.</p>
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                    <h3 className="font-semibold text-lg mb-3">Vendor-Specific Rules</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-x-6 gap-y-4 items-end bg-slate-900/30 p-4 rounded-md">
+                        <div className="md:col-span-4">
+                            <label className="block text-sm text-slate-400 mb-1">Vendor</label>
+                            <select value={newRule.vendorName} onChange={(e) => setNewRule(r => ({...r, vendorName: e.target.value}))} className="bg-slate-700 border border-slate-600 rounded-md p-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                {allVendors.map(v => <option key={v} value={v}>{v}</option>)}
+                            </select>
                         </div>
-                        <div className="p-3 rounded-lg border border-slate-600 bg-slate-900/20">
-                            <h5 className="font-bold text-slate-300">Worsening Trend</h5>
-                             <p className="text-slate-400 mt-1">
-                                A "Worsening" trend is flagged if over <strong className="text-white">{appliedThresholds.worseningPercentage}%</strong> of a vendor's PO lines had negative ETA changes in the last <strong className="text-white">{appliedThresholds.worseningDays}</strong> days.
-                            </p>
+                         <div className="md:col-span-4">
+                            <label className="block text-sm text-slate-400 mb-1">Rule Type</label>
+                            <select 
+                                value={newRule.ruleType} 
+                                onChange={(e) => setNewRule(r => ({...r, ruleType: e.target.value}))} 
+                                className="bg-slate-700 border border-slate-600 rounded-md p-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                                {Object.entries(RULE_DEFINITIONS).map(([key, { label }]) => (
+                                    <option key={key} value={key}>{label}</option>
+                                ))}
+                            </select>
                         </div>
-                        <div className="p-3 rounded-lg border border-red-600 bg-red-900/20">
-                            <h5 className="font-bold text-red-400">Critical Alert</h5>
-                             <ul className="list-disc list-inside text-slate-300 mt-1 space-y-1">
-                                <li>
-                                    Triggers when <strong className="text-white">BOTH</strong> Past Due Count &gt; {appliedThresholds.count} <strong className="text-white">AND</strong> Past Due % &gt; {appliedThresholds.percentage}% are met.
-                                </li>
-                                <li>
-                                     Also triggers if trend is <strong className="text-white">Worsening</strong> and <strong className="text-white">EITHER</strong> threshold is met.
-                                </li>
-                            </ul>
+                        <div className="md:col-span-2">
+                            <label className="block text-sm text-slate-400 mb-1">{RULE_DEFINITIONS[newRule.ruleType]?.unitLabel || 'Threshold >'}</label>
+                            <input 
+                                type="number" 
+                                value={newRule.threshold} 
+                                onChange={(e) => setNewRule(r => ({...r, threshold: parseInt(e.target.value, 10) || 0}))} 
+                                className="bg-slate-700 border border-slate-600 rounded-md p-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                            />
+                        </div>
+                        <div className="md:col-span-2">
+                            <button onClick={handleAddVendorRule} className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg transition">
+                                Add Rule
+                            </button>
                         </div>
                     </div>
+                    {vendorRules.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                            {vendorRules.map(rule => (
+                                <div key={rule.id} className="flex items-center justify-between bg-slate-800 p-2 rounded-md text-sm">
+                                    <div className="flex items-center gap-4">
+                                        <span className="font-semibold text-slate-200">{rule.vendorName}</span>
+                                        <span className="text-slate-400">{RULE_DEFINITIONS[rule.ruleType]?.label} {rule.ruleType === 'performance_score' ? '<' : '>'} {rule.threshold} {RULE_DEFINITIONS[rule.ruleType]?.unitName}</span>
+                                    </div>
+                                    <button onClick={() => handleDeleteVendorRule(rule.id)} className="text-red-400 hover:text-red-300 p-1 rounded-full">
+                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
+
                  <div className="mt-4 pt-4 border-t border-slate-700">
                     <h4 className="text-sm font-semibold text-slate-300 mb-2">Critical Alert Notifications (Simulation)</h4>
                     <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
@@ -307,8 +427,8 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                         highestAlertSeverity === 'Critical' 
                             ? 'text-red-300' 
                             : 'text-yellow-300'
-                    }`}>Active Alerts</h3>
-                    <div className="space-y-2">
+                    }`}>Active Alerts ({alerts.length})</h3>
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
                         {alerts.map(alert => (
                             <div key={alert.id} className={`flex items-start p-3 rounded-md border-l-4 ${
                                 alert.severity === 'Critical' 
@@ -320,7 +440,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                                </svg>
                                 <div>
                                     <p className={`font-bold ${alert.severity === 'Critical' ? 'text-red-300' : 'text-yellow-300'}`}>{alert.vendor}</p>
-                                    <p className="text-sm text-slate-300">{alert.message}</p>
+                                    <p className="text-sm text-slate-300" dangerouslySetInnerHTML={{ __html: alert.message.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>') }}></p>
                                 </div>
                             </div>
                         ))}
@@ -335,6 +455,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                         <tr>
                             <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Vendor</th>
                             <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Vendor #</th>
+                            <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Perf. Score</th>
                             <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Total PO Lines</th>
                             <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Past Due Lines</th>
                             <th scope="col" className="px-6 py-4 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Past Due %</th>
@@ -357,6 +478,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                                             {vendor.name}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-400">{vendor.vendorNumber}</td>
+                                        <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${getScoreColor(vendor.performanceScore)}`}>{vendor.performanceScore.toFixed(0)}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">{vendor.totalLines}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">{vendor.pastDueLinesCount}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
@@ -409,7 +531,7 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                                     </tr>
                                     {isExpanded && (
                                         <tr className="bg-slate-900/40">
-                                            <td colSpan={6} className="p-0">
+                                            <td colSpan={7} className="p-0">
                                                 <div className="p-4">
                                                     <VendorTrendChart 
                                                         vendorName={vendor.name}

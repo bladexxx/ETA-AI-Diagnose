@@ -13,6 +13,9 @@ export interface POLine {
   unscheduled_qty: number;
   transit_time_days: number;
   tracking_number: string | null;
+  creation_date: string;
+  ack_status: 'Acknowledged' | 'Pending';
+  ack_date: string | null;
 }
 
 export interface POLog {
@@ -33,6 +36,7 @@ export interface VendorStats {
   pastDuePercentage: number;
   trend: 'improving' | 'worsening' | 'stable';
   recentNegativeChanges: number;
+  performanceScore: number;
 }
 
 export interface Alert {
@@ -76,4 +80,11 @@ export interface AnalysisCategory {
 export interface CategorizedAnalysisResult {
   summary: string; // A high-level summary paragraph
   analysis: AnalysisCategory[];
+}
+
+export interface VendorRule {
+  id: string;
+  vendorName: string;
+  ruleType: string; // e.g., 'po_ack', 'past_due_count'
+  threshold: number;
 }
