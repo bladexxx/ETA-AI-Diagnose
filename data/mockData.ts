@@ -1,3 +1,4 @@
+
 import type { POLine, POLog } from '../types';
 
 const vendors = [
@@ -14,7 +15,8 @@ const createDate = (offsetDays: number): string => {
   return formatDate(date);
 };
 
-export const openPoStatusLatest: POLine[] = [
+// --- Original Seed Data ---
+const existingPoStatusLatest: POLine[] = [
   // == Quantum Parts (High Volume, Moderate Past Due) ==
   { po_line_id: 'PO1001-1', po_number: 'PO1001', vendor: 'Quantum Parts', vendor_number: 10521, esd: createDate(-20), eta: createDate(-15), scheduled_ship_qty: 100, shipped_qty: 0, open_qty: 100, unscheduled_qty: 0, transit_time_days: 5, tracking_number: null },
   { po_line_id: 'PO1004-1', po_number: 'PO1004', vendor: 'Quantum Parts', vendor_number: 10521, esd: createDate(-45), eta: createDate(-40), scheduled_ship_qty: 500, shipped_qty: 200, open_qty: 300, unscheduled_qty: 0, transit_time_days: 5, tracking_number: 'TRACK789' },
@@ -55,7 +57,7 @@ export const openPoStatusLatest: POLine[] = [
   { po_line_id: 'PO2004-1', po_number: 'PO2004', vendor: 'Orion Manufacturing', vendor_number: 60331, esd: createDate(20), eta: createDate(30), scheduled_ship_qty: 1000, shipped_qty: 0, open_qty: 1000, unscheduled_qty: 0, transit_time_days: 10, tracking_number: null },
 ];
 
-export const openPoStatusLog: POLog[] = [
+const existingPoStatusLog: POLog[] = [
   // Quantum Parts Logs
   { log_id: 'L1', po_number: 'PO1001', po_line_id: 'PO1001-1', change_date: createDate(-17), changed_field: 'eta', old_value: createDate(-18), new_value: createDate(-15) },
   { log_id: 'L3', po_number: 'PO1004', po_line_id: 'PO1004-1', change_date: createDate(-42), changed_field: 'shipped_qty', old_value: 0, new_value: 200 },
@@ -72,3 +74,108 @@ export const openPoStatusLog: POLog[] = [
   { log_id: 'L6', po_number: 'PO1005', po_line_id: 'PO1005-1', change_date: createDate(-92), changed_field: 'eta', old_value: createDate(-98), new_value: createDate(-90) },
   { log_id: 'L7', po_number: 'PO1006', po_line_id: 'PO1006-1', change_date: createDate(-182), changed_field: 'eta', old_value: createDate(-188), new_value: createDate(-180) },
 ];
+
+
+// --- Data Generation Logic ---
+
+/** Helper to generate a realistic set of PO lines and logs for a vendor */
+const generateVendorLines = (vendorName: string, vendorNumber: number, count: number, poStart: number): { lines: POLine[], logs: POLog[] } => {
+  const lines: POLine[] = [];
+  const logs: POLog[] = [];
+  let poCounter = poStart;
+  const logIdStart = Math.floor(Math.random() * 10000);
+
+  for (let i = 0; i < count; i++) {
+    const po_number = `PO${poCounter++}`;
+    const po_line_id = `${po_number}-1`;
+
+    const isPastDue = Math.random() < 0.25; // 25% chance of being past due
+    const etaOffsetDays = isPastDue 
+      ? -(Math.floor(Math.random() * 45) + 1)
+      : (Math.floor(Math.random() * 90) + 1);
+    const eta = createDate(etaOffsetDays);
+    const esd = createDate(etaOffsetDays - (Math.floor(Math.random() * 10) + 5));
+
+    const scheduled_ship_qty = Math.floor(Math.random() * 400) + 20;
+    const hasShipped = Math.random() < 0.4;
+    const shipped_qty = hasShipped ? Math.floor(Math.random() * scheduled_ship_qty) : 0;
+    const open_qty = scheduled_ship_qty - shipped_qty;
+
+    lines.push({
+      po_line_id, po_number, vendor: vendorName, vendor_number: vendorNumber, esd, eta,
+      scheduled_ship_qty, shipped_qty, open_qty, unscheduled_qty: 0,
+      transit_time_days: Math.floor(Math.random() * 10) + 5,
+      tracking_number: hasShipped && shipped_qty > 0 ? `TRACK${poCounter}` : null
+    });
+
+    // Add some change logs, especially negative ones
+    if (Math.random() < 0.15) { // 15% chance of having a negative change log
+      const changeDateOffset = -(Math.floor(Math.random() * 6) + 1); // within last 7 days
+      const oldEtaOffset = etaOffsetDays - (Math.floor(Math.random() * 5) + 2);
+      logs.push({
+        log_id: `L${logIdStart + i}`,
+        po_number,
+        po_line_id,
+        change_date: createDate(changeDateOffset),
+        changed_field: 'eta',
+        old_value: createDate(oldEtaOffset),
+        new_value: eta,
+      });
+    }
+  }
+  return { lines, logs };
+};
+
+const vendorData = [
+  { name: "Quantum Parts", number: 10521, poStart: 4000 },
+  { name: "Stellar Supplies", number: 27394, poStart: 4100 },
+  { name: "Nexus Components", number: 38821, poStart: 4200 },
+  { name: "Apex Innovations", number: 41098, poStart: 4300 },
+  { name: "Fusion Fabricators", number: 56234, poStart: 4400 },
+  { name: "Orion Manufacturing", number: 60331, poStart: 4500 },
+  { name: "Cyber Systems Inc.", number: 72155, poStart: 4600 },
+  { name: "Helios Materials", number: 84920, poStart: 4700 },
+  { name: "Pioneer Tech", number: 91102, poStart: 4800 },
+  { name: "Vanguard Industries", number: 95345, poStart: 4900 },
+];
+
+let generatedLines: POLine[] = [];
+let generatedLogs: POLog[] = [];
+
+vendorData.forEach(vendor => {
+  const existingLinesCount = existingPoStatusLatest.filter(l => l.vendor === vendor.name).length;
+  const linesToAdd = Math.max(0, 30 - existingLinesCount);
+  if (linesToAdd > 0) {
+    const { lines, logs } = generateVendorLines(vendor.name, vendor.number, linesToAdd, vendor.poStart);
+    generatedLines = [...generatedLines, ...lines];
+    generatedLogs = [...generatedLogs, ...logs];
+  }
+});
+
+// For Stellar Supplies, add more negative logs to ensure it remains "worsening"
+const { lines: stellarExtraLines } = generateVendorLines("Stellar Supplies", 27394, 5, 4150);
+const stellarNegativeLogs: POLog[] = stellarExtraLines.map((line, index) => {
+    const etaDate = new Date(line.eta);
+    const oldEtaDate = new Date(etaDate);
+    oldEtaDate.setDate(etaDate.getDate() - (Math.floor(Math.random() * 5) + 3));
+    const changeDate = new Date();
+    changeDate.setDate(changeDate.getDate() - (Math.floor(Math.random() * 6) + 1));
+
+    return {
+        log_id: `L-S-NEG-${index}`,
+        po_number: line.po_number,
+        po_line_id: line.po_line_id,
+        change_date: formatDate(changeDate),
+        changed_field: 'eta',
+        old_value: formatDate(oldEtaDate),
+        new_value: line.eta,
+    };
+});
+
+generatedLines.push(...stellarExtraLines);
+generatedLogs.push(...stellarNegativeLogs);
+
+
+// --- Final Exported Data ---
+export const openPoStatusLatest: POLine[] = [...existingPoStatusLatest, ...generatedLines];
+export const openPoStatusLog: POLog[] = [...existingPoStatusLog, ...generatedLogs];

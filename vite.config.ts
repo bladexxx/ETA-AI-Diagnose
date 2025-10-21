@@ -1,6 +1,3 @@
-// FIX: Added a triple-slash directive to provide Node.js types for the `process` global, which resolves the error on `process.cwd()`.
-/// <reference types="node" />
-
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
@@ -8,7 +5,10 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // Load env variables from .env files
-  const env = loadEnv(mode, process.cwd(), '');
+  // FIX: Replaced `process.cwd()` with `''` and removed the failing triple-slash directive.
+  // The `loadEnv` function defaults to `process.cwd()` for an empty `envDir`,
+  // which resolves the type error for `process.cwd()` without changing behavior.
+  const env = loadEnv(mode, '', '');
 
   return {
     plugins: [react(), basicSsl()],
@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
 
       // Per project guidelines, the Gemini API key MUST come from the execution environment's `process.env.API_KEY`.
       // It is NOT defined here. The application code in `geminiService.ts` will read it directly
-      // from the true `process.env` object available at runtime.
+      // from the true `process.env` object at runtime.
     },
   };
 });
