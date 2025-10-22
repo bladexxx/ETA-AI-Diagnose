@@ -18,7 +18,10 @@ const KnowledgeBaseManager: React.FC<KnowledgeBaseManagerProps> = ({ files, onFi
         
         setIsUploading(true);
 
-        const fileReadPromises = Array.from(uploadedFiles).map(file => {
+        // FIX: Explicitly type `file` as `File` to resolve type inference issues.
+        // This fixes errors where `file.name` was accessed on an `unknown` type
+        // and where `file` was passed to `readAsText` which expects a `Blob`.
+        const fileReadPromises = Array.from(uploadedFiles).map((file: File) => {
             return new Promise<KnowledgeFile>((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (e) => {

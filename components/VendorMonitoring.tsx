@@ -213,6 +213,12 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
     const [activeFilters, setActiveFilters] = useState<FilterCondition[]>([]);
     const [sortConfig, setSortConfig] = useState<{ key: keyof VendorStats; direction: 'asc' | 'desc' }>({ key: 'performanceScore', direction: 'asc' });
 
+    // State for notification channels
+    const [isEmailEnabled, setIsEmailEnabled] = useState(false);
+    const [emailAddress, setEmailAddress] = useState('');
+    const [isTeamsEnabled, setIsTeamsEnabled] = useState(false);
+    const [teamsWebhookUrl, setTeamsWebhookUrl] = useState('');
+
     const handleApplyRules = () => {
         setAppliedThresholds(uiThresholds);
     };
@@ -281,9 +287,14 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
             const logDate = new Date(log.change_date);
             if (logDate > trendLookbackDate) {
                 const vendor = vendorByPoLineId.get(log.po_line_id);
-                if (vendor && log.changed_field === 'eta' && typeof log.new_value === 'string' && typeof log.old_value === 'string' && new Date(log.new_value) > new Date(log.old_value)) {
-                    if (!poLinesWithNegativeChanges.has(vendor)) poLinesWithNegativeChanges.set(vendor, new Set());
-                    poLinesWithNegativeChanges.get(vendor)!.add(log.po_line_id);
+                // FIX: Refactored the conditional to help TypeScript's type inference.
+                // By checking the types first, we ensure `log.new_value` and `log.old_value`
+                // are correctly narrowed to `string` before being used in `new Date()`.
+                if (vendor && log.changed_field === 'eta' && typeof log.new_value === 'string' && typeof log.old_value === 'string') {
+                    if (new Date(log.new_value) > new Date(log.old_value)) {
+                        if (!poLinesWithNegativeChanges.has(vendor)) poLinesWithNegativeChanges.set(vendor, new Set());
+                        poLinesWithNegativeChanges.get(vendor)!.add(log.po_line_id);
+                    }
                 }
             }
         });
@@ -485,6 +496,59 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
                         <div className="md:col-span-2"><button onClick={handleAddVendorRule} className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg transition">Add Rule</button></div>
                     </div>
                     {vendorRules.length > 0 && (<div className="mt-4 space-y-2">{vendorRules.map(rule => (<div key={rule.id} className="flex items-center justify-between bg-slate-800 p-2 rounded-md text-sm"><div className="flex items-center gap-4"><span className="font-semibold text-slate-200">{rule.vendorName}</span><span className="text-slate-400">{RULE_DEFINITIONS[rule.ruleType]?.label} {rule.ruleType === 'performance_score' ? '<' : '>'} {rule.threshold} {RULE_DEFINITIONS[rule.ruleType]?.unitName}</span></div><button onClick={() => handleDeleteVendorRule(rule.id)} className="text-red-400 hover:text-red-300 p-1 rounded-full"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button></div>))}</div>)}
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                    <h3 className="font-semibold text-lg mb-3">Notification Channels</h3>
+                    <div className="space-y-4">
+                        {/* Email Channel */}
+                        <div>
+                            <label className="flex items-center space-x-3 cursor-pointer">
+                                <input 
+                                    type="checkbox"
+                                    checked={isEmailEnabled}
+                                    onChange={(e) => setIsEmailEnabled(e.target.checked)}
+                                    className="h-5 w-5 bg-slate-600 border-slate-500 rounded text-blue-500 focus:ring-blue-500"
+                                />
+                                <span className="text-slate-200">Enable Email Notifications</span>
+                            </label>
+                            {isEmailEnabled && (
+                                <div className="mt-2 pl-8 animate-fade-in">
+                                    <input 
+                                        type="email"
+                                        placeholder="e.g., team@example.com, manager@example.com"
+                                        value={emailAddress}
+                                        onChange={(e) => setEmailAddress(e.target.value)}
+                                        className="bg-slate-700 border border-slate-600 rounded-md p-2 w-full max-w-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-1">Comma-separated email addresses.</p>
+                                </div>
+                            )}
+                        </div>
+                        {/* Teams Channel */}
+                        <div>
+                            <label className="flex items-center space-x-3 cursor-pointer">
+                                <input 
+                                    type="checkbox"
+                                    checked={isTeamsEnabled}
+                                    onChange={(e) => setIsTeamsEnabled(e.target.checked)}
+                                    className="h-5 w-5 bg-slate-600 border-slate-500 rounded text-blue-500 focus:ring-blue-500"
+                                />
+                                <span className="text-slate-200">Enable Microsoft Teams Notifications</span>
+                            </label>
+                            {isTeamsEnabled && (
+                                <div className="mt-2 pl-8 animate-fade-in">
+                                    <input 
+                                        type="url"
+                                        placeholder="Enter MS Teams Webhook URL"
+                                        value={teamsWebhookUrl}
+                                        onChange={(e) => setTeamsWebhookUrl(e.target.value)}
+                                        className="bg-slate-700 border border-slate-600 rounded-md p-2 w-full max-w-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </div>
             </div>
 
