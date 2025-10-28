@@ -187,8 +187,8 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
         percentage: 20,
         count: 5,
         minPoLines: 20,
-        worseningDays: 7,
-        worseningPercentage: 10,
+        worseningDays: 30,
+        worseningPercentage: 20,
     });
     
     // State for the thresholds being edited in the UI
