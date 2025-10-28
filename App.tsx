@@ -1,9 +1,10 @@
+
 import React, { useState } from 'react';
 import Header from './components/Header';
 import VendorMonitoring from './components/VendorMonitoring';
 import AnalysisChat from './components/AnalysisChat';
 import RiskAssessment from './components/RiskAssessment';
-import { openPoStatusLatest, openPoStatusLog } from './data/mockData';
+import { openPoStatusLatest, openPoStatusLog, groupedDataByVendor } from './data/mockData';
 import type { POLine, POLog, CategorizedAnalysisResult } from './types';
 import { Tab } from './types';
 
@@ -37,7 +38,8 @@ const App: React.FC = () => {
         return (
           <AnalysisChat 
             poLines={poLines} 
-            poLogs={poLogs} 
+            poLogs={poLogs}
+            groupedData={groupedDataByVendor}
             initialVendor={analysisVendor}
             initialQuery={analysisQuery}
             analysisContent={analysisContent}
@@ -49,7 +51,7 @@ const App: React.FC = () => {
           />
         );
       case Tab.RiskAndSim:
-        return <RiskAssessment poLines={poLines} />;
+        return <RiskAssessment poLines={poLines} groupedData={groupedDataByVendor} />;
       default:
         return <VendorMonitoring poLines={poLines} poLogs={poLogs} onAnalyzeVendor={handleAnalyzeWorseningVendor} />;
     }

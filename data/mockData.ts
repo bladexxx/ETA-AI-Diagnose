@@ -217,3 +217,30 @@ generatedLogs.push(...stellarNegativeLogs);
 // --- Final Exported Data ---
 export const openPoStatusLatest: POLine[] = [...existingPoStatusLatest, ...generatedLines];
 export const openPoStatusLog: POLog[] = [...existingPoStatusLog, ...generatedLogs];
+
+// --- Grouped Data for Performance ---
+export interface VendorData {
+  lines: POLine[];
+  logs: POLog[];
+}
+
+const poLineToVendorMap = new Map<string, string>();
+openPoStatusLatest.forEach(line => {
+    poLineToVendorMap.set(line.po_line_id, line.vendor);
+});
+
+export const groupedDataByVendor = new Map<string, VendorData>();
+
+openPoStatusLatest.forEach(line => {
+  if (!groupedDataByVendor.has(line.vendor)) {
+    groupedDataByVendor.set(line.vendor, { lines: [], logs: [] });
+  }
+  groupedDataByVendor.get(line.vendor)!.lines.push(line);
+});
+
+openPoStatusLog.forEach(log => {
+  const vendor = poLineToVendorMap.get(log.po_line_id);
+  if (vendor && groupedDataByVendor.has(vendor)) {
+    groupedDataByVendor.get(vendor)!.logs.push(log);
+  }
+});

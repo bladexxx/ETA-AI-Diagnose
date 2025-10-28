@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { getRiskPrediction, categorizeJustifications, getWhatIfSimulation } from '../services/geminiService';
-import type { POLine, EnrichedRiskAssessmentResult, JustificationCategory, Language } from '../types';
+import type { POLine, EnrichedRiskAssessmentResult, JustificationCategory, Language, POLog } from '../types';
 import Spinner from './common/Spinner';
 
 declare const marked: any;
@@ -120,7 +120,7 @@ const VendorMultiSelect: React.FC<{
 };
 
 
-const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
+const RiskAssessment: React.FC<{ poLines: POLine[]; groupedData: Map<string, { lines: POLine[], logs: POLog[] }> }> = ({ poLines, groupedData }) => {
   // State for Risk Assessment
   const [riskResults, setRiskResults] = useState<EnrichedRiskAssessmentResult[]>([]);
   const [vendorSummary, setVendorSummary] = useState<Record<string, number>>({});
@@ -153,7 +153,7 @@ const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
     setJustificationSummary([]);
     
     try {
-      const filteredPoLines = poLines.filter(line => selectedVendors.includes(line.vendor));
+      const filteredPoLines = selectedVendors.flatMap(vendor => groupedData.get(vendor)?.lines || []);
       const results = await getRiskPrediction(filteredPoLines, language);
       
       if (results.length > 0) {
@@ -181,7 +181,7 @@ const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
     } finally {
       setIsAssessing(false);
     }
-  }, [isAssessing, selectedVendors, poLines, language, poLineToVendorMap]);
+  }, [isAssessing, selectedVendors, language, poLineToVendorMap, groupedData]);
   
   const handleRunSimulation = async () => {
     if (isSimulating || !simulationPrompt.trim()) return;
@@ -190,7 +190,7 @@ const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
     
     try {
         const filteredPoLines = selectedVendors.length > 0 
-            ? poLines.filter(line => selectedVendors.includes(line.vendor))
+            ? selectedVendors.flatMap(vendor => groupedData.get(vendor)?.lines || [])
             : poLines; // Fallback to all if no vendors selected for simulation context
         const result = await getWhatIfSimulation(simulationPrompt, filteredPoLines, language);
         setSimulationResult(result);
@@ -266,9 +266,8 @@ const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
   };
 
   const sortedVendorSummary = useMemo(() =>
-    // FIX: Using destructuring `([, valA], [, valB])` is safer and more explicit than index access,
-    // correctly inferring `valA` and `valB` as numbers to fix the arithmetic operation type error.
-    Object.entries(vendorSummary).sort(([, valA], [, valB]) => valB - valA),
+    // FIX: Destructuring in the sort callback was causing type inference issues. Switched to direct index access to ensure values are treated as numbers.
+    Object.entries(vendorSummary).sort((a, b) => b[1] - a[1]),
     [vendorSummary]
   );
 
@@ -306,118 +305,120 @@ const RiskAssessment: React.FC<{ poLines: POLine[]; }> = ({ poLines }) => {
             <button 
               onClick={handleRunAssessment}
               disabled={isAssessing || selectedVendors.length === 0}
-              className="bg-purple-600 hover:bg-purple-500 w-full text-white font-bold py-2.5 px-6 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 focus:ring-offset-slate-900 flex items-center justify-center whitespace-nowrap"
+              className="bg-purple-600 hover:bg-purple-500 w-full text-white font-bold py-2.5 px-6 rounded-lg transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isAssessing ? <Spinner /> : `Run Assessment`}
+              {isAssessing ? <Spinner /> : 'Run Assessment'}
             </button>
           </div>
         </div>
 
-        {isAssessing ? (
-          <div className="flex justify-center items-center my-12"><Spinner /> <span className="ml-3 text-lg">AI is assessing risks for selected vendors...</span></div>
-        ) : riskResults.length === 0 ? (
-          <div className="text-center py-12 text-slate-400">Please select vendors and run an assessment to see the risk profile.</div>
-        ) : (
-          <div className="space-y-6 mt-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <SummaryCard title="High-Risk Lines by Vendor">
-                {sortedVendorSummary.length > 0 ? (
-                   sortedVendorSummary
-                    .map(([vendor, count]) => (
-                      <div key={vendor} className="flex justify-between">
-                        <span>{vendor}</span>
-                        <span className="font-bold text-red-400">{count} lines</span>
-                      </div>
-                    ))
-                ) : <p className="text-slate-400">No high-risk lines found.</p>}
-              </SummaryCard>
-               <SummaryCard title="AI-Powered Justification Summary (High Risk)">
-                {sortedJustificationSummary.length > 0 ? (
-                   sortedJustificationSummary
-                    .map(({ category, count }) => (
-                      <div key={category} className="flex justify-between">
-                        <span>{category}</span>
-                        <span className="font-bold text-red-400">{count} lines</span>
-                      </div>
-                    ))
-                ) : <p className="text-slate-400">No high-risk lines to categorize.</p>}
-              </SummaryCard>
+        {isAssessing && <div className="flex justify-center items-center my-8"><Spinner /> <span className="ml-2">AI is assessing risks...</span></div>}
+
+        {riskResults.length > 0 && !isAssessing && (
+            <div className="mt-6 space-y-6 animate-fade-in">
+                {/* Summary Section */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <SummaryCard title="High-Risk POs by Vendor">
+                        {sortedVendorSummary.length > 0 ? (
+                            <ul className="list-disc pl-4 text-slate-200">
+                                {sortedVendorSummary.map(([vendor, count]) => (
+                                    <li key={vendor}><strong>{vendor}:</strong> {count} POs</li>
+                                ))}
+                            </ul>
+                        ) : <p className="text-slate-400">No vendors with high-risk POs.</p>}
+                    </SummaryCard>
+                    <SummaryCard title="Top Justification Categories (High-Risk)">
+                        {sortedJustificationSummary.length > 0 ? (
+                            <ul className="list-disc pl-4 text-slate-200">
+                                {sortedJustificationSummary.map(({ category, count }) => (
+                                    <li key={category}><strong>{category}:</strong> {count} times</li>
+                                ))}
+                            </ul>
+                        ) : <p className="text-slate-400">No justifications to categorize.</p>}
+                    </SummaryCard>
+                </div>
+
+                {/* Results Table */}
+                <div className="overflow-x-auto bg-slate-800 rounded-lg border border-slate-700">
+                    <table className="min-w-full divide-y divide-slate-700">
+                        <thead className="bg-slate-700/50">
+                            <tr>
+                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
+                                    <button onClick={() => handleSort('risk_level')} className="flex items-center space-x-1 focus:outline-none hover:text-white">
+                                        <span>Risk Level</span><span className="text-slate-400 text-base">{renderSortArrow('risk_level')}</span>
+                                    </button>
+                                </th>
+                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
+                                    <button onClick={() => handleSort('vendor')} className="flex items-center space-x-1 focus:outline-none hover:text-white">
+                                        <span>Vendor</span><span className="text-slate-400 text-base">{renderSortArrow('vendor')}</span>
+                                    </button>
+                                </th>
+                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
+                                     <button onClick={() => handleSort('po_line_id')} className="flex items-center space-x-1 focus:outline-none hover:text-white">
+                                        <span>PO Line</span><span className="text-slate-400 text-base">{renderSortArrow('po_line_id')}</span>
+                                    </button>
+                                </th>
+                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Justification</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                            {sortedResults.map((item, index) => (
+                                <tr key={`${item.po_line_id}-${index}`} className="hover:bg-slate-700/40">
+                                    <td className="px-6 py-4 whitespace-nowrap">
+                                        <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${getRiskColor(item.risk_level)}`}>{item.risk_level}</span>
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">{item.vendor}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-blue-300">{item.po_line_id}</td>
+                                    <td className="px-6 py-4 text-sm text-slate-400 max-w-md">{item.justification}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             </div>
-            
-            <div className="overflow-x-auto bg-slate-800 rounded-lg border border-slate-700">
-              <table className="min-w-full divide-y divide-slate-700">
-                <thead className="bg-slate-700/50">
-                  <tr>
-                    {[{label: 'PO Line', key: 'po_line_id'}, {label: 'Vendor', key: 'vendor'}, {label: 'Risk Level', key: 'risk_level'}].map(({label, key}) => (
-                      <th key={key} scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">
-                        <button onClick={() => handleSort(key as SortKey)} className="flex items-center space-x-1 focus:outline-none">
-                          <span>{label}</span>
-                          <span className="text-slate-400">{renderSortArrow(key as SortKey)}</span>
-                        </button>
-                      </th>
-                    ))}
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Justification</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700">
-                  {sortedResults.map((item) => (
-                    <tr key={item.po_line_id} className="hover:bg-slate-700/40">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-300">{item.po_line_id}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-white">{item.vendor}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getRiskColor(item.risk_level)}`}>
-                              {item.risk_level}
-                          </span>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-300">{item.justification}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
         )}
       </section>
 
       {/* --- What-If Simulation Section --- */}
-      <section className="pt-8 border-t border-slate-700">
-        <h2 className="text-2xl font-bold text-white mb-4">AI What-If Simulation</h2>
-         <div className="bg-slate-800/50 p-6 rounded-lg border border-slate-700 space-y-4">
-            <h3 className="font-semibold text-lg">Define Scenario</h3>
-            <p className="text-sm text-slate-400">The simulation will run against the vendors selected for the risk assessment above. If none are selected, it will run against all vendors.</p>
-            <form onSubmit={(e) => { e.preventDefault(); handleRunSimulation(); }} className="flex flex-col sm:flex-row items-start gap-3">
-                <textarea
+      <section>
+        <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
+            <h3 className="text-xl font-bold text-white mb-3">AI What-If Simulation</h3>
+            <p className="text-sm text-slate-400 mb-4">
+                Propose a scenario to understand potential impacts. The AI will use the vendors selected above as context (or all vendors if none are selected).
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                    type="text"
                     value={simulationPrompt}
                     onChange={(e) => setSimulationPrompt(e.target.value)}
-                    placeholder="e.g., What if Stellar Supplies transit time increases by 5 days? Which POs become high risk?"
-                    className="flex-grow w-full bg-slate-700 border border-slate-600 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white min-h-[60px] sm:min-h-0"
+                    placeholder="e.g., What if Quantum Parts has a 2-week production shutdown?"
+                    className="flex-grow bg-slate-700 border border-slate-600 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
                     disabled={isSimulating}
-                    rows={2}
                 />
-                <button 
-                  type="submit"
-                  disabled={isSimulating || !simulationPrompt.trim()}
-                  className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-slate-900 flex items-center justify-center w-full sm:w-auto"
+                <button
+                    onClick={handleRunSimulation}
+                    disabled={isSimulating || !simulationPrompt.trim()}
+                    className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
                 >
-                  {isSimulating ? <Spinner /> : 'Run Simulation'}
+                    {isSimulating ? <Spinner /> : 'Run Simulation'}
                 </button>
-            </form>
-        </div>
-
-        <div className="mt-6">
-            <h3 className="font-semibold text-lg mb-2">Simulation Result</h3>
-            <div className="bg-slate-900/50 p-4 rounded-lg overflow-y-auto border border-slate-700 min-h-[25vh]">
-                {isSimulating && <div className="flex justify-center items-center my-4"><Spinner /> <span className="ml-2">AI is running the simulation...</span></div>}
-                {simulationResult ? (
-                    <div 
-                      className="prose prose-invert max-w-none" 
-                      dangerouslySetInnerHTML={{ __html: typeof marked !== 'undefined' ? marked.parse(simulationResult) : simulationResult.replace(/\n/g, '<br />') }}
-                    ></div>
-                ) : (
-                    !isSimulating && <p className="text-slate-400 text-center p-8">Enter a scenario above to see how it impacts your risk profile.</p>
-                )}
-                 <div ref={resultEndRef} />
             </div>
+
+            {(isSimulating || simulationResult) && (
+                <div className="mt-4">
+                    <h4 className="font-semibold text-slate-300 mb-2">Simulation Result:</h4>
+                    <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-600 min-h-[150px] max-h-[400px] overflow-y-auto">
+                        {isSimulating && <div className="flex justify-center items-center my-4"><Spinner /> <span className="ml-2">AI is running the simulation...</span></div>}
+                        {simulationResult && (
+                            <div
+                                className="prose prose-invert max-w-none prose-p:text-slate-300"
+                                dangerouslySetInnerHTML={{ __html: marked.parse(simulationResult) }}
+                            ></div>
+                        )}
+                        <div ref={resultEndRef} />
+                    </div>
+                </div>
+            )}
         </div>
       </section>
     </div>

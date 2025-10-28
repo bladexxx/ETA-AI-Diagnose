@@ -287,13 +287,13 @@ const VendorMonitoring: React.FC<VendorMonitoringProps> = ({ poLines, poLogs, on
             const logDate = new Date(log.change_date);
             if (logDate > trendLookbackDate) {
                 const vendor = vendorByPoLineId.get(log.po_line_id);
-                // FIX: Refactored the conditional to help TypeScript's type inference.
-                // By checking the types first, we ensure `log.new_value` and `log.old_value`
-                // are correctly narrowed to `string` before being used in `new Date()`.
-                if (vendor && log.changed_field === 'eta' && typeof log.new_value === 'string' && typeof log.old_value === 'string') {
-                    if (new Date(log.new_value) > new Date(log.old_value)) {
-                        if (!poLinesWithNegativeChanges.has(vendor)) poLinesWithNegativeChanges.set(vendor, new Set());
-                        poLinesWithNegativeChanges.get(vendor)!.add(log.po_line_id);
+                // FIX: Refactored conditional checks to ensure `log.new_value` and `log.old_value` are correctly narrowed to `string` before use, resolving type errors.
+                if (vendor && log.changed_field === 'eta') {
+                    if (typeof log.new_value === 'string' && typeof log.old_value === 'string') {
+                        if (new Date(log.new_value) > new Date(log.old_value)) {
+                            if (!poLinesWithNegativeChanges.has(vendor)) poLinesWithNegativeChanges.set(vendor, new Set());
+                            poLinesWithNegativeChanges.get(vendor)!.add(log.po_line_id);
+                        }
                     }
                 }
             }

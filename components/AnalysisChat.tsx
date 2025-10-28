@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { getRootCauseAnalysis, translateText, mergeAnalysisResults } from '../services/geminiService';
 import * as knowledgeService from '../services/knowledgeService';
@@ -27,6 +28,7 @@ const LanguageSelector: React.FC<{
 interface AnalysisChatProps {
   poLines: POLine[];
   poLogs: POLog[];
+  groupedData: Map<string, { lines: POLine[], logs: POLog[] }>;
   initialVendor: string | null;
   initialQuery: string | null;
   onAnalysisStart: () => void;
@@ -74,7 +76,7 @@ const shuffleArray = <T,>(array: T[]): T[] => {
 };
 
 
-const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVendor, initialQuery, onAnalysisStart, analysisContent, setAnalysisContent }) => {
+const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, groupedData, initialVendor, initialQuery, onAnalysisStart, analysisContent, setAnalysisContent }) => {
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('AI is analyzing...');
@@ -86,8 +88,9 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
   const [knowledgeFiles, setKnowledgeFiles] = useState<{name: string, uploadedAt: string}[]>([]);
   
   // State for batching and sampling
-  const [samplingPercentage, setSamplingPercentage] = useState(15);
-  const [numBatches, setNumBatches] = useState(2);
+  const [appliedAdvancedOptions, setAppliedAdvancedOptions] = useState({ samplingPercentage: 15, numBatches: 2 });
+  const [advancedOptions, setAdvancedOptions] = useState({ samplingPercentage: 15, numBatches: 2 });
+
 
   const analysisEndRef = useRef<HTMLDivElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
@@ -144,33 +147,35 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
     setIsLoading(true);
     setAnalysisContent({ en: null, zh: null });
 
-    // 1. Get all data for the selected vendor
-    const allVendorLines = vendor === 'All Vendors'
-      ? poLines
-      : poLines.filter(line => line.vendor === vendor);
-    
-    const allVendorPoLineIds = new Set(allVendorLines.map(l => l.po_line_id));
-    
-    const allVendorLogs = vendor === 'All Vendors'
-      ? poLogs
-      : poLogs.filter(log => allVendorPoLineIds.has(log.po_line_id));
+    // 1. Get all data for the selected vendor (Optimized)
+    let allVendorLines: POLine[];
+    let allVendorLogs: POLog[];
+
+    if (vendor === 'All Vendors') {
+      allVendorLines = poLines;
+      allVendorLogs = poLogs;
+    } else {
+      const vendorData = groupedData.get(vendor);
+      allVendorLines = vendorData?.lines || [];
+      allVendorLogs = vendorData?.logs || [];
+    }
 
     let remainingLines = [...allVendorLines];
     const batchResults: (CategorizedAnalysisResult | null)[] = [];
     const totalOriginalCount = allVendorLines.length;
     // Ensure sample size is at least 1 if there's any data
     const sampleSize = totalOriginalCount > 0 
-        ? Math.max(1, Math.floor(totalOriginalCount * (samplingPercentage / 100)))
+        ? Math.max(1, Math.floor(totalOriginalCount * (appliedAdvancedOptions.samplingPercentage / 100)))
         : 0;
 
     try {
         const knowledgeBaseContent = knowledgeService.getKnowledgeBaseContent();
         
         // 2. Loop through batches, sampling data each time
-        for (let i = 0; i < numBatches; i++) {
+        for (let i = 0; i < appliedAdvancedOptions.numBatches; i++) {
             if (remainingLines.length === 0) break; // Stop if no more data to sample
             
-            setLoadingMessage(`Sampling and analyzing batch ${i + 1} of ${numBatches}...`);
+            setLoadingMessage(`Sampling and analyzing batch ${i + 1} of ${appliedAdvancedOptions.numBatches}...`);
 
             // Sample lines from the remaining pool
             const shuffledLines = shuffleArray(remainingLines);
@@ -209,7 +214,7 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, poLines, poLogs, selectedVendor, setAnalysisContent, numBatches, samplingPercentage]);
+  }, [isLoading, poLines, poLogs, selectedVendor, setAnalysisContent, appliedAdvancedOptions, groupedData]);
   
   const handleExportToPdf = async () => {
     if (!resultsContainerRef.current || isExporting) return;
@@ -393,12 +398,20 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
                   <div className="p-3 border-t border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                           <label htmlFor="sampling-percentage" className="block text-xs text-slate-400 mb-1">Sampling Percentage per Batch</label>
-                          <input type="number" id="sampling-percentage" value={samplingPercentage} onChange={(e) => setSamplingPercentage(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 15)))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                          <input type="number" id="sampling-percentage" value={advancedOptions.samplingPercentage} onChange={(e) => setAdvancedOptions(opts => ({ ...opts, samplingPercentage: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 15)) }))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                       </div>
                       <div>
                           <label htmlFor="num-batches" className="block text-xs text-slate-400 mb-1">Number of Batches</label>
-                          <input type="number" id="num-batches" value={numBatches} onChange={(e) => setNumBatches(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                          <input type="number" id="num-batches" value={advancedOptions.numBatches} onChange={(e) => setAdvancedOptions(opts => ({ ...opts, numBatches: Math.max(1, parseInt(e.target.value, 10) || 1) }))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
                       </div>
+                      <div className="md:col-span-2 pt-2 flex justify-end">
+                        <button
+                            onClick={() => setAppliedAdvancedOptions(advancedOptions)}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm py-2 px-4 rounded-lg transition-colors"
+                        >
+                            Apply
+                        </button>
+                    </div>
                   </div>
               </details>
 
