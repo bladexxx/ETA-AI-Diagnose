@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { getRootCauseAnalysis, translateText } from '../services/geminiService';
+import { getRootCauseAnalysis, translateText, mergeAnalysisResults } from '../services/geminiService';
 import * as knowledgeService from '../services/knowledgeService';
 import type { POLine, POLog, Language, CategorizedAnalysisResult } from '../types';
 import Spinner from './common/Spinner';
@@ -8,15 +8,6 @@ import KnowledgeBaseManager from './KnowledgeBaseManager';
 declare const marked: any;
 declare const html2canvas: any;
 declare const jspdf: any;
-
-const LOADING_MESSAGES = [
-  'Analyzing PO lines for patterns...',
-  'Correlating data with change logs...',
-  'Consulting the knowledge base for context...',
-  'Identifying root causes and contributing factors...',
-  'Synthesizing findings into a report...',
-  'Almost there, just finalizing the details...'
-];
 
 const LanguageSelector: React.FC<{
     language: Language;
@@ -72,6 +63,17 @@ const CategoryIcon: React.FC<{ category: 'Vendor Issues' | 'Internal (EMT) Issue
     return <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-3 text-cyan-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>;
 };
 
+// Helper function for shuffling an array (Fisher-Yates shuffle)
+const shuffleArray = <T,>(array: T[]): T[] => {
+    const newArray = [...array];
+    for (let i = newArray.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+    }
+    return newArray;
+};
+
+
 const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVendor, initialQuery, onAnalysisStart, analysisContent, setAnalysisContent }) => {
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -82,10 +84,14 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
   const [language, setLanguage] = useState<Language>('en');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [knowledgeFiles, setKnowledgeFiles] = useState<{name: string, uploadedAt: string}[]>([]);
+  
+  // State for batching and sampling
+  const [samplingPercentage, setSamplingPercentage] = useState(15);
+  const [numBatches, setNumBatches] = useState(2);
+
   const analysisEndRef = useRef<HTMLDivElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
   const isInitialMount = useRef(true);
-  const loadingIntervalRef = useRef<number | null>(null);
 
   const vendors = useMemo(() => ['All Vendors', ...Array.from(new Set(poLines.map(line => line.vendor)))], [poLines]);
   
@@ -137,27 +143,73 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
 
     setIsLoading(true);
     setAnalysisContent({ en: null, zh: null });
-    
-    const filteredLines = vendor === 'All Vendors'
+
+    // 1. Get all data for the selected vendor
+    const allVendorLines = vendor === 'All Vendors'
       ? poLines
       : poLines.filter(line => line.vendor === vendor);
-
-    const poLineIdsForVendor = new Set(filteredLines.map(l => l.po_line_id));
     
-    const filteredLogs = vendor === 'All Vendors'
+    const allVendorPoLineIds = new Set(allVendorLines.map(l => l.po_line_id));
+    
+    const allVendorLogs = vendor === 'All Vendors'
       ? poLogs
-      : poLogs.filter(log => poLineIdsForVendor.has(log.po_line_id));
-      
+      : poLogs.filter(log => allVendorPoLineIds.has(log.po_line_id));
+
+    let remainingLines = [...allVendorLines];
+    const batchResults: (CategorizedAnalysisResult | null)[] = [];
+    const totalOriginalCount = allVendorLines.length;
+    // Ensure sample size is at least 1 if there's any data
+    const sampleSize = totalOriginalCount > 0 
+        ? Math.max(1, Math.floor(totalOriginalCount * (samplingPercentage / 100)))
+        : 0;
+
     try {
-      const knowledgeBaseContent = knowledgeService.getKnowledgeBaseContent();
-      const result = await getRootCauseAnalysis(currentQuery, filteredLines, filteredLogs, vendor, 'en', knowledgeBaseContent);
-      setAnalysisContent({ en: result, zh: null });
+        const knowledgeBaseContent = knowledgeService.getKnowledgeBaseContent();
+        
+        // 2. Loop through batches, sampling data each time
+        for (let i = 0; i < numBatches; i++) {
+            if (remainingLines.length === 0) break; // Stop if no more data to sample
+            
+            setLoadingMessage(`Sampling and analyzing batch ${i + 1} of ${numBatches}...`);
+
+            // Sample lines from the remaining pool
+            const shuffledLines = shuffleArray(remainingLines);
+            const lineSample = shuffledLines.slice(0, sampleSize);
+            remainingLines = shuffledLines.slice(sampleSize);
+
+            // Get corresponding logs for the sampled lines
+            const samplePoLineIds = new Set(lineSample.map(l => l.po_line_id));
+            const logSample = allVendorLogs.filter(log => samplePoLineIds.has(log.po_line_id));
+            
+            if (lineSample.length === 0) continue; // Skip empty batches
+
+            const result = await getRootCauseAnalysis(currentQuery, lineSample, logSample, vendor, 'en', knowledgeBaseContent);
+            if (result) {
+                batchResults.push(result);
+            }
+        }
+
+        const validResults = batchResults.filter((r): r is CategorizedAnalysisResult => r !== null);
+        
+        // 3. Merge results if necessary
+        if (validResults.length === 0) {
+            throw new Error("AI analysis did not return any valid results from the batches.");
+        } else if (validResults.length > 1) {
+            setLoadingMessage('Merging analysis results...');
+            const mergedResult = await mergeAnalysisResults(validResults, 'en');
+            setAnalysisContent({ en: mergedResult, zh: null });
+        } else {
+            setAnalysisContent({ en: validResults[0], zh: null });
+        }
+
     } catch (error) {
-       setAnalysisContent({ en: { summary: 'An error occurred while generating the analysis. Please check the console and try again.', analysis: [] }, zh: null });
+       console.error("Error during batched analysis:", error);
+       const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred.';
+       setAnalysisContent({ en: { summary: `An error occurred during the analysis: ${errorMessage}`, analysis: [] }, zh: null });
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, poLines, poLogs, selectedVendor, setAnalysisContent]);
+  }, [isLoading, poLines, poLogs, selectedVendor, setAnalysisContent, numBatches, samplingPercentage]);
   
   const handleExportToPdf = async () => {
     if (!resultsContainerRef.current || isExporting) return;
@@ -259,32 +311,6 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
       window.removeEventListener('keydown', handleEscKey);
     };
   }, [isFullscreen]);
-  
-  useEffect(() => {
-    if (isLoading) {
-      let messageIndex = 0;
-      setLoadingMessage(LOADING_MESSAGES[messageIndex]); // Set initial message
-
-      loadingIntervalRef.current = window.setInterval(() => {
-        messageIndex = (messageIndex + 1) % LOADING_MESSAGES.length;
-        setLoadingMessage(LOADING_MESSAGES[messageIndex]);
-      }, 2500);
-    } else {
-      if (loadingIntervalRef.current) {
-        clearInterval(loadingIntervalRef.current);
-        loadingIntervalRef.current = null;
-      }
-      setLoadingMessage('AI is analyzing...'); // Reset for next time
-    }
-
-    // Cleanup on unmount
-    return () => {
-      if (loadingIntervalRef.current) {
-        clearInterval(loadingIntervalRef.current);
-      }
-    };
-  }, [isLoading]);
-
 
   return (
     <div className={`flex flex-col transition-all duration-300 ${isFullscreen ? 'fixed inset-0 bg-slate-900 z-50 h-screen p-4' : 'h-full'}`}>
@@ -362,6 +388,20 @@ const AnalysisChat: React.FC<AnalysisChatProps> = ({ poLines, poLogs, initialVen
 
         {!isFullscreen && (
           <div className="mt-auto">
+              <details className="mb-2 bg-slate-700/30 border border-slate-700 rounded-lg">
+                  <summary className="p-2 cursor-pointer text-sm font-medium text-slate-300 hover:bg-slate-700/50 rounded-t-lg">Advanced Options</summary>
+                  <div className="p-3 border-t border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                          <label htmlFor="sampling-percentage" className="block text-xs text-slate-400 mb-1">Sampling Percentage per Batch</label>
+                          <input type="number" id="sampling-percentage" value={samplingPercentage} onChange={(e) => setSamplingPercentage(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 15)))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      </div>
+                      <div>
+                          <label htmlFor="num-batches" className="block text-xs text-slate-400 mb-1">Number of Batches</label>
+                          <input type="number" id="num-batches" value={numBatches} onChange={(e) => setNumBatches(Math.max(1, parseInt(e.target.value, 10) || 1))} className="w-full bg-slate-700 border border-slate-600 rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      </div>
+                  </div>
+              </details>
+
                <div className="flex flex-wrap gap-2 mb-4">
                   {PRESET_QUERIES.map((q, i) => (
                       <button 

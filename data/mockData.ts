@@ -177,7 +177,7 @@ let generatedLogs: POLog[] = [];
 
 vendorData.forEach(vendor => {
   const existingLinesCount = existingPoStatusLatest.filter(l => l.vendor === vendor.name).length;
-  const linesToAdd = Math.max(0, 30 - existingLinesCount);
+  const linesToAdd = Math.max(0, 150 - existingLinesCount);
   if (linesToAdd > 0) {
     const { lines, logs } = generateVendorLines(vendor.name, vendor.number, linesToAdd, vendor.poStart);
     generatedLines = [...generatedLines, ...lines];

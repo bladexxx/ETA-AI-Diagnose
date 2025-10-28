@@ -205,6 +205,61 @@ Please provide your categorized root cause analysis in the specified JSON format
     }
 };
 
+export const mergeAnalysisResults = async (
+    results: CategorizedAnalysisResult[],
+    language: Language
+): Promise<CategorizedAnalysisResult | null> => {
+    if (results.length < 2) {
+        return results[0] || null;
+    }
+
+    const languageName = language === 'zh' ? 'Chinese' : 'English';
+    const systemInstruction = `You are a world-class supply chain analyst AI. Your task is to merge multiple, partial analysis reports into a single, cohesive, and de-duplicated final report.
+
+**Response Rules:**
+1.  **JSON Format:** Your response MUST be a valid JSON object, with no other text. The structure is: { "summary": "string", "analysis": [{ "category": "'Vendor Issues' | 'Internal (EMT) Issues'", "points": ["string", ...] }] }.
+2.  **Merge Logic:**
+    *   **Synthesize Summary:** Read all summaries and create a new, overarching summary that captures the most critical, high-level findings from all reports.
+    *   **De-duplicate Points:** Identify and merge similar or identical points across the reports. If two points describe the same issue (e.g., late acknowledgements), combine them into a single, more comprehensive point.
+    *   **Retain Unique Findings:** Ensure that unique, important findings from any single report are preserved in the final output.
+    *   **Categorize Consistently:** Maintain the 'Vendor Issues' and 'Internal (EMT) Issues' categories.
+3.  **Markdown Highlighting:** Retain and consistently apply Markdown formatting for emphasis as seen in the source reports (e.g., **bold** for PO numbers, dates, etc.).
+4.  **Language:** Generate the final report in ${languageName}.
+`;
+    
+    const userPrompt = `Here are ${results.length} analysis reports to merge:\n\n${JSON.stringify(results, null, 2)}\n\nPlease provide the single, merged report in the specified JSON format.`;
+    
+    const geminiSchema = {
+        type: Type.OBJECT,
+        properties: {
+            summary: { type: Type.STRING, description: "A high-level summary of the findings." },
+            analysis: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        category: { type: Type.STRING, enum: ['Vendor Issues', 'Internal (EMT) Issues'] },
+                        points: { type: Type.ARRAY, items: { type: Type.STRING } }
+                    },
+                    required: ["category", "points"]
+                }
+            }
+        },
+        required: ["summary", "analysis"]
+    };
+
+    try {
+        const jsonString = IS_GATEWAY_CONFIGURED
+            ? await callAIGateway(systemInstruction, userPrompt, true)
+            : await callGeminiDirectly(systemInstruction, userPrompt, geminiSchema);
+        
+        return JSON.parse(jsonString) as CategorizedAnalysisResult;
+    } catch (error) {
+        console.error("Error generating or parsing merged analysis:", error);
+        return null;
+    }
+};
+
 export const translateText = async (
     analysis: CategorizedAnalysisResult,
     targetLanguage: Language
